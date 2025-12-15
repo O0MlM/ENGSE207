@@ -1,112 +1,61 @@
+require('dotenv').config();
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+const database = require('./database/connection');
+const taskController = require('./src/controllers/taskController');
+const errorHandler = require('./src/middleware/errorHandler');
+const logger = require('./src/utils/logger');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(express.json());
 app.use(express.static('public'));
 
-// Database connection
-const db = new sqlite3.Database('./database/tasks.db', (err) => {
-    if (err) console.error('❌ DB Error:', err.message);
-    else console.log('✅ Database connected');
+// Logging middleware
+app.use((req, res, next) => {
+    logger.info(`${req.method} ${req.path}`);
+    next();
 });
 
-// --------------------
-// API ROUTES
-// --------------------
+// Routes - Statistics (ต้องอยู่ก่อน :id routes)
+app.get('/api/tasks/stats', taskController.getStatistics.bind(taskController));
 
-// GET all tasks
-app.get('/api/tasks', (req, res) => {
-    db.all('SELECT * FROM tasks ORDER BY created_at DESC', [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ success: true, tasks: rows });
-    });
-});
+// Routes - CRUD
+app.get('/api/tasks', taskController.getAllTasks.bind(taskController));
+app.get('/api/tasks/:id', taskController.getTaskById.bind(taskController));
+app.post('/api/tasks', taskController.createTask.bind(taskController));
+app.put('/api/tasks/:id', taskController.updateTask.bind(taskController));
+app.delete('/api/tasks/:id', taskController.deleteTask.bind(taskController));
 
-// GET single task
-app.get('/api/tasks/:id', (req, res) => {
-    db.get('SELECT * FROM tasks WHERE id = ?', [req.params.id], (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!row) return res.status(404).json({ error: 'Task not found' });
-        res.json({ success: true, task: row });
-    });
-});
+// Routes - Special actions
+app.patch('/api/tasks/:id/next-status', taskController.moveToNextStatus.bind(taskController));
 
-// CREATE task
-app.post('/api/tasks', (req, res) => {
-    const { title, description, status, priority } = req.body;
-    if (!title || title.trim() === '') return res.status(400).json({ error: 'Title required' });
+// Error handling middleware (ต้องอยู่สุดท้าย)
+app.use(errorHandler);
 
-    const sql = 'INSERT INTO tasks (title, description, status, priority) VALUES (?, ?, ?, ?)';
-    db.run(sql, [title, description || null, status || 'TODO', priority || 'MEDIUM'], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        db.get('SELECT * FROM tasks WHERE id = ?', [this.lastID], (err, row) => {
-            res.status(201).json({ success: true, task: row });
+// เริ่ม server
+async function startServer() {
+    try {
+        // เชื่อมต่อฐานข้อมูล
+        await database.connect();
+        
+        // เริ่ม Express server
+        app.listen(PORT, () => {
+            logger.info(`🚀 เซิร์ฟเวอร์ทำงานที่ http://localhost:${PORT}`);
+            logger.info(`📊 Environment: ${process.env.NODE_ENV}`);
         });
-    });
+    } catch (error) {
+        logger.error('ไม่สามารถเริ่มเซิร์ฟเวอร์ได้:', error);
+        process.exit(1);
+    }
+}
+
+// จัดการการปิดอย่างถูกต้อง
+process.on('SIGINT', async () => {
+    logger.info('กำลังปิดเซิร์ฟเวอร์...');
+    await database.close();
+    process.exit(0);
 });
 
-// UPDATE task
-app.put('/api/tasks/:id', (req, res) => {
-    const { title, description, status, priority } = req.body;
-    const sql = `UPDATE tasks SET
-        title = COALESCE(?, title),
-        description = COALESCE(?, description),
-        status = COALESCE(?, status),
-        priority = COALESCE(?, priority),
-        updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?`;
-    db.run(sql, [title, description, status, priority, req.params.id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        if (this.changes === 0) return res.status(404).json({ error: 'Task not found' });
-        db.get('SELECT * FROM tasks WHERE id = ?', [req.params.id], (err, row) => {
-            res.json({ success: true, task: row });
-        });
-    });
-});
-
-// DELETE task
-app.delete('/api/tasks/:id', (req, res) => {
-    db.run('DELETE FROM tasks WHERE id = ?', [req.params.id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        if (this.changes === 0) return res.status(404).json({ error: 'Task not found' });
-        res.json({ success: true });
-    });
-});
-
-// PATCH status
-app.patch('/api/tasks/:id/status', (req, res) => {
-    const { status } = req.body;
-    const validStatuses = ['TODO', 'IN_PROGRESS', 'DONE'];
-    if (!validStatuses.includes(status)) return res.status(400).json({ error: 'Invalid status' });
-
-    const sql = 'UPDATE tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?';
-    db.run(sql, [status, req.params.id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        if (this.changes === 0) return res.status(404).json({ error: 'Task not found' });
-        db.get('SELECT * FROM tasks WHERE id = ?', [req.params.id], (err, row) => {
-            res.json({ success: true, task: row });
-        });
-    });
-});
-
-// Serve frontend
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-// Start server
-app.listen(PORT, () => console.log(`🚀 Server running at http://localhost:${PORT}`));
-
-// Graceful shutdown
-process.on('SIGINT', () => {
-    db.close((err) => {
-        if (err) console.error('❌ Error closing DB:', err.message);
-        else console.log('✅ Database closed');
-        process.exit(0);
-    });
-});
+startServer();

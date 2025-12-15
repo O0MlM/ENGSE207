@@ -17,7 +17,8 @@
   "author": "ENGSE207 Teaching Team",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.21.2",
+    "dotenv": "^17.2.3",
+    "express": "^4.22.1",
     "sqlite3": "^5.1.7"
   },
   "devDependencies": {
